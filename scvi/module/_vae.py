@@ -566,7 +566,7 @@ class VAE(BaseMinifiedModeModuleClass):
         """
         batch_index = tensors[REGISTRY_KEYS.BATCH_KEY]
 
-        to_sum = []
+        all_log_probs = []
         if n_mc_samples_per_pass > n_mc_samples:
             logger.warn(
                 "Number of chunks is larger than the total number of samples, setting it to the number of samples"
@@ -590,8 +590,7 @@ class VAE(BaseMinifiedModeModuleClass):
             p_z = (
                 Normal(torch.zeros_like(qz.loc), torch.ones_like(qz.scale))
                 .log_prob(z)
-                .sum(dim=-1)
-            )
+            ).sum(dim=-1)
             p_x_zl = -reconst_loss
             q_z_x = qz.log_prob(z).sum(dim=-1)
             log_prob_sum = p_z + p_x_zl - q_z_x
@@ -605,19 +604,21 @@ class VAE(BaseMinifiedModeModuleClass):
                 p_l = (
                     Normal(local_library_log_means, local_library_log_vars.sqrt())
                     .log_prob(library)
-                    .sum(dim=-1)
-                )
+                ).sum(dim=-1)
                 q_l_x = ql.log_prob(library).sum(dim=-1)
 
                 log_prob_sum += p_l - q_l_x
 
-            to_sum.append(log_prob_sum)
-        to_sum = torch.cat(to_sum, dim=0)
-        batch_log_lkl = logsumexp(to_sum, dim=0) - np.log(n_mc_samples)
+            all_log_probs.append(log_prob_sum)
+
+        all_log_probs = torch.stack(all_log_probs, dim=0)  # Shape: [n_passes, batch_size]
+        batch_log_lkl = logsumexp(all_log_probs, dim=0) - np.log(n_mc_samples)
+
         if return_mean:
             batch_log_lkl = torch.mean(batch_log_lkl).item()
         else:
             batch_log_lkl = batch_log_lkl.cpu()
+
         return batch_log_lkl
 
 
