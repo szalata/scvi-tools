@@ -319,6 +319,7 @@ def test_scvi(save_path):
         labels_key="labels",
     )
     model = SCVI(adata)
+    model.train(1, train_size=0.5)
     adata2 = adata.copy()
     model.get_elbo(adata2)
     assert adata.uns[_constants._SCVI_UUID_KEY] != adata2.uns[_constants._SCVI_UUID_KEY]
@@ -332,11 +333,21 @@ def test_scvi(save_path):
     # test differential expression
     model.differential_expression(groupby="labels", group1="label_1")
     model.differential_expression(
+        groupby="labels", group1="label_1", weights="importance"
+    )
+    model.differential_expression(
         groupby="labels", group1="label_1", group2="label_2", mode="change"
     )
     model.differential_expression(groupby="labels")
     model.differential_expression(idx1=[0, 1, 2], idx2=[3, 4, 5])
+    model.differential_expression(idx1=[0, 1, 2], idx2=[3, 4, 5], weights="importance")
+    model.differential_expression(idx1=[0, 1, 2], idx2=[3, 4, 5])
     model.differential_expression(idx1=[0, 1, 2])
+
+    model2 = SCVI(adata, use_observed_lib_size=False)
+    model2.train(1)
+    model2.differential_expression(idx1=[0, 1, 2], idx2=[3, 4, 5])
+    model2.differential_expression(idx1=[0, 1, 2], idx2=[3, 4, 5], weights="importance")
 
     # transform batch works with all different types
     a = synthetic_iid()
@@ -504,9 +515,7 @@ def test_saving_and_loading(save_path):
             os.makedirs(dir_path, exist_ok=overwrite)
         else:
             raise ValueError(
-                "{} already exists. Please provide an unexisting directory for saving.".format(
-                    dir_path
-                )
+                f"{dir_path} already exists. Please provide an unexisting directory for saving."
             )
 
         file_name_prefix = prefix or ""
@@ -819,7 +828,11 @@ def test_backed_anndata_scvi(save_path):
 
 
 @pytest.mark.parametrize(
-    "data", [scvi.data.synthetic_iid(200), scvi.data.synthetic_iid(200, sparse=True)]
+    "data",
+    [
+        scvi.data.synthetic_iid(200),
+        scvi.data.synthetic_iid(200, sparse_format="csr_array"),
+    ],
 )
 def test_ann_dataloader(data):
     adata_manager = generic_setup_adata_manager(
@@ -949,7 +962,6 @@ def test_device_backed_data_splitter():
         training_plan=training_plan,
         data_splitter=ds,
         max_epochs=1,
-        use_gpu=None,
     )
     runner()
 
@@ -1022,7 +1034,7 @@ def test_scanvi(save_path):
     assert "elbo_train" in logged_keys
     assert "reconstruction_loss_train" in logged_keys
     assert "kl_local_train" in logged_keys
-    assert "classification_loss_validation" in logged_keys
+    assert "validation_classification_loss" in logged_keys
     adata2 = synthetic_iid()
     predictions = model.predict(adata2, indices=[1, 2, 3])
     assert len(predictions) == 3
@@ -1099,6 +1111,24 @@ def test_scanvi(save_path):
     a2.obs["size_factor"] = np.random.randint(1, 5, size=(a2.shape[0],))
     scanvi_model = scvi.model.SCANVI.from_scvi_model(m, "label_0", adata=a2)
     scanvi_model.train(1)
+
+
+def test_linear_classifier_scanvi(n_latent: int = 10, n_labels: int = 5):
+    adata = synthetic_iid(n_labels=n_labels)
+    SCANVI.setup_anndata(
+        adata,
+        "labels",
+        "label_0",
+        batch_key="batch",
+    )
+    model = SCANVI(adata, linear_classifier=True, n_latent=n_latent)
+
+    assert len(model.module.classifier.classifier) == 2  # linear layer + softmax
+    assert isinstance(model.module.classifier.classifier[0], torch.nn.Linear)
+    assert model.module.classifier.classifier[0].in_features == n_latent
+    assert model.module.classifier.classifier[0].out_features == n_labels - 1
+
+    model.train(max_epochs=1)
 
 
 def test_linear_scvi(save_path):
@@ -1617,3 +1647,28 @@ def test_early_stopping():
     model = SCVI(adata)
     model.train(n_epochs, early_stopping=True, plan_kwargs={"lr": 0})
     assert len(model.history["elbo_train"]) < n_epochs
+
+
+def test_de_features():
+    adata = synthetic_iid()
+    SCVI.setup_anndata(
+        adata,
+        batch_key="batch",
+        labels_key="labels",
+    )
+    model = SCVI(adata)
+    model.train(1)
+
+    model.differential_expression(
+        groupby="labels",
+        pseudocounts=1e-4,
+    )
+    model.differential_expression(
+        groupby="labels",
+        weights="importance",
+    )
+    model.differential_expression(
+        groupby="labels",
+        delta=0.5,
+        weights="importance",
+    )

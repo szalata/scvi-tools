@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 import logging
 import warnings
-from typing import List, Optional, Union
 
 import numpy as np
 import torch
@@ -94,9 +95,7 @@ class CondSCVI(RNASeqMixin, VAEMixin, UnsupervisedTrainingMixin, BaseModelClass)
         self.init_params_ = self._get_init_params(locals())
 
     @torch.inference_mode()
-    def get_vamp_prior(
-        self, adata: Optional[AnnData] = None, p: int = 10
-    ) -> np.ndarray:
+    def get_vamp_prior(self, adata: AnnData | None = None, p: int = 10) -> np.ndarray:
         r"""Return an empirical prior over the cell-type specific latent space (vamp prior) that may be used for deconvolution.
 
         Parameters
@@ -202,13 +201,14 @@ class CondSCVI(RNASeqMixin, VAEMixin, UnsupervisedTrainingMixin, BaseModelClass)
         self,
         max_epochs: int = 300,
         lr: float = 0.001,
-        use_gpu: Optional[Union[str, int, bool]] = None,
         accelerator: str = "auto",
-        devices: Union[int, List[int], str] = "auto",
+        devices: int | list[int] | str = "auto",
         train_size: float = 1,
-        validation_size: Optional[float] = None,
+        validation_size: float | None = None,
+        shuffle_set_split: bool = True,
         batch_size: int = 128,
-        plan_kwargs: Optional[dict] = None,
+        datasplitter_kwargs: dict | None = None,
+        plan_kwargs: dict | None = None,
         **kwargs,
     ):
         """Trains the model using MAP inference.
@@ -219,7 +219,6 @@ class CondSCVI(RNASeqMixin, VAEMixin, UnsupervisedTrainingMixin, BaseModelClass)
             Number of epochs to train for
         lr
             Learning rate for optimization.
-        %(param_use_gpu)s
         %(param_accelerator)s
         %(param_devices)s
         train_size
@@ -227,8 +226,13 @@ class CondSCVI(RNASeqMixin, VAEMixin, UnsupervisedTrainingMixin, BaseModelClass)
         validation_size
             Size of the test set. If `None`, defaults to 1 - `train_size`. If
             `train_size + validation_size < 1`, the remaining cells belong to a test set.
+        shuffle_set_split
+            Whether to shuffle indices before splitting. If `False`, the val, train, and test set are split in the
+            sequential order of the data according to `validation_size` and `train_size` percentages.
         batch_size
             Minibatch size to use during training.
+        datasplitter_kwargs
+            Additional keyword arguments passed into :class:`~scvi.dataloaders.DataSplitter`.
         plan_kwargs
             Keyword args for :class:`~scvi.train.TrainingPlan`. Keyword arguments passed to
             `train()` will overwrite values present in `plan_kwargs`, when appropriate.
@@ -244,12 +248,13 @@ class CondSCVI(RNASeqMixin, VAEMixin, UnsupervisedTrainingMixin, BaseModelClass)
             plan_kwargs = update_dict
         super().train(
             max_epochs=max_epochs,
-            use_gpu=use_gpu,
             accelerator=accelerator,
             devices=devices,
             train_size=train_size,
             validation_size=validation_size,
+            shuffle_set_split=shuffle_set_split,
             batch_size=batch_size,
+            datasplitter_kwargs=datasplitter_kwargs,
             plan_kwargs=plan_kwargs,
             **kwargs,
         )
@@ -259,8 +264,8 @@ class CondSCVI(RNASeqMixin, VAEMixin, UnsupervisedTrainingMixin, BaseModelClass)
     def setup_anndata(
         cls,
         adata: AnnData,
-        labels_key: Optional[str] = None,
-        layer: Optional[str] = None,
+        labels_key: str | None = None,
+        layer: str | None = None,
         **kwargs,
     ):
         """%(summary)s.

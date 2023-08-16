@@ -299,6 +299,7 @@ class NegativeBinomial(Distribution):
     arg_constraints = {
         "mu": constraints.greater_than_eq(0),
         "theta": constraints.greater_than_eq(0),
+        "scale": constraints.greater_than_eq(0),
     }
     support = constraints.nonnegative_integer
 
@@ -412,8 +413,8 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
     arg_constraints = {
         "mu": constraints.greater_than_eq(0),
         "theta": constraints.greater_than_eq(0),
-        "zi_probs": constraints.half_open_interval(0.0, 1.0),
         "zi_logits": constraints.real,
+        "scale": constraints.greater_than_eq(0),
     }
     support = constraints.nonnegative_integer
 
@@ -561,7 +562,7 @@ class NegativeBinomialMixture(Distribution):
             theta = self.theta1
         else:
             theta = self.theta1 * mixing_sample + self.theta2 * (1 - mixing_sample)
-        gamma_d = _gamma(mu, theta)
+        gamma_d = _gamma(theta, mu)
         p_means = gamma_d.sample(sample_shape)
 
         # Clamping as distributions objects can have buggy behaviors when

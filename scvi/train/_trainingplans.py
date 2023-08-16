@@ -1,7 +1,7 @@
 from collections import OrderedDict
 from functools import partial
 from inspect import signature
-from typing import Callable, Dict, Iterable, Literal, Optional, Union
+from typing import Any, Callable, Dict, Iterable, Literal, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -10,10 +10,12 @@ import numpy as np
 import optax
 import pyro
 import torch
+from lightning.pytorch.strategies.ddp import DDPStrategy
 from pyro.nn import PyroModule
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torchmetrics import AUROC, Accuracy, F1Score
 
-from scvi import REGISTRY_KEYS
+from scvi import METRIC_KEYS, REGISTRY_KEYS
 from scvi.autotune._types import Tunable, TunableMixin
 from scvi.module import Classifier
 from scvi.module.base import (
@@ -88,7 +90,7 @@ class TrainingPlan(TunableMixin, pl.LightningModule):
     modules.
 
     The following developer tutorial will familiarize you more with training plans
-    and how to use them: :doc:`/tutorials/notebooks/model_user_guide`.
+    and how to use them: :doc:`/tutorials/notebooks/dev/model_user_guide`.
 
     Parameters
     ----------
@@ -237,6 +239,10 @@ class TrainingPlan(TunableMixin, pl.LightningModule):
         self.elbo_val.reset()
 
     @property
+    def use_sync_dist(self):
+        return isinstance(self.trainer.strategy, DDPStrategy)
+
+    @property
     def n_obs_training(self):
         """Number of observations in the training set.
 
@@ -315,6 +321,7 @@ class TrainingPlan(TunableMixin, pl.LightningModule):
             on_step=False,
             on_epoch=True,
             batch_size=n_obs_minibatch,
+            sync_dist=self.use_sync_dist,
         )
 
         # accumlate extra metrics passed to loss recorder
@@ -330,6 +337,7 @@ class TrainingPlan(TunableMixin, pl.LightningModule):
                 on_step=False,
                 on_epoch=True,
                 batch_size=n_obs_minibatch,
+                sync_dist=self.use_sync_dist,
             )
 
     def training_step(self, batch, batch_idx):
@@ -339,7 +347,13 @@ class TrainingPlan(TunableMixin, pl.LightningModule):
             self.loss_kwargs.update({"kl_weight": kl_weight})
             self.log("kl_weight", kl_weight, on_step=True, on_epoch=False)
         _, _, scvi_loss = self.forward(batch, loss_kwargs=self.loss_kwargs)
-        self.log("train_loss", scvi_loss.loss, on_epoch=True)
+        self.log(
+            "train_loss",
+            scvi_loss.loss,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=self.use_sync_dist,
+        )
         self.compute_and_log_metrics(scvi_loss, self.train_metrics, "train")
         return scvi_loss.loss
 
@@ -349,7 +363,12 @@ class TrainingPlan(TunableMixin, pl.LightningModule):
         # so when relevant, the actual loss value is rescaled to number
         # of training examples
         _, _, scvi_loss = self.forward(batch, loss_kwargs=self.loss_kwargs)
-        self.log("validation_loss", scvi_loss.loss, on_epoch=True)
+        self.log(
+            "validation_loss",
+            scvi_loss.loss,
+            on_epoch=True,
+            sync_dist=self.use_sync_dist,
+        )
         self.compute_and_log_metrics(scvi_loss, self.val_metrics, "validation")
 
     def _optimizer_creator_fn(
@@ -562,7 +581,7 @@ class AdversarialTrainingPlan(TrainingPlan):
             fool_loss = self.loss_adversarial_classifier(z, batch_tensor, False)
             loss += fool_loss * kappa
 
-        self.log("train_loss", loss, on_epoch=True)
+        self.log("train_loss", loss, on_epoch=True, prog_bar=True)
         self.compute_and_log_metrics(scvi_loss, self.train_metrics, "train")
         opt1.zero_grad()
         self.manual_backward(loss)
@@ -647,6 +666,8 @@ class SemiSupervisedTrainingPlan(TrainingPlan):
     ----------
     module
         A module instance from class ``BaseModuleClass``.
+    n_classes
+        The number of classes in the labeled dataset.
     classification_ratio
         Weight of the classification_loss in loss function
     lr
@@ -678,6 +699,7 @@ class SemiSupervisedTrainingPlan(TrainingPlan):
     def __init__(
         self,
         module: BaseModuleClass,
+        n_classes: int,
         *,
         classification_ratio: int = 50,
         lr: float = 1e-3,
@@ -707,6 +729,71 @@ class SemiSupervisedTrainingPlan(TrainingPlan):
             **loss_kwargs,
         )
         self.loss_kwargs.update({"classification_ratio": classification_ratio})
+        self.initialize_metrics(n_classes)
+
+    def initialize_metrics(self, n_classes: int):
+        """Initialize metrics."""
+        kwargs = {"task": "multiclass", "num_classes": n_classes, "top_k": 1}
+        self.train_accuracy = Accuracy(**kwargs)
+        self.train_f1 = F1Score(**kwargs)
+        self.val_accuracy = Accuracy(**kwargs)
+        self.val_f1 = F1Score(**kwargs)
+
+    def log_with_mode(self, key: str, value: Any, mode: str, **kwargs):
+        """Log with mode."""
+        # TODO: Include this with a base training plan
+        self.log(f"{mode}_{key}", value, **kwargs)
+
+    def compute_and_log_metrics(
+        self, loss_output: LossOutput, metrics: Dict[str, ElboMetric], mode: str
+    ):
+        """Computes and logs metrics."""
+        super().compute_and_log_metrics(loss_output, metrics, mode)
+
+        # no labeled observations in minibatch
+        if loss_output.classification_loss is None:
+            return
+
+        classification_loss = loss_output.classification_loss
+        true_labels = loss_output.true_labels
+        logits = loss_output.logits
+        predicted_labels = torch.argmax(logits, dim=-1, keepdim=True)
+
+        if mode == "train":
+            accuracy = self.train_accuracy
+            f1 = self.train_f1
+        else:
+            accuracy = self.val_accuracy
+            f1 = self.val_f1
+
+        accuracy(predicted_labels, true_labels)
+        f1(predicted_labels, true_labels)
+
+        self.log_with_mode(
+            METRIC_KEYS.CLASSIFICATION_LOSS_KEY,
+            classification_loss,
+            mode,
+            on_step=False,
+            on_epoch=True,
+            batch_size=loss_output.n_obs_minibatch,
+        )
+        self.log_with_mode(
+            METRIC_KEYS.ACCURACY_KEY,
+            accuracy,
+            mode,
+            on_step=False,
+            on_epoch=True,
+            batch_size=loss_output.n_obs_minibatch,
+        )
+        self.log_with_mode(
+            METRIC_KEYS.F1_SCORE_KEY,
+            f1,
+            mode,
+            on_step=False,
+            on_epoch=True,
+            batch_size=loss_output.n_obs_minibatch,
+        )
+        # currently not logging auroc due to accumulation error
 
     def training_step(self, batch, batch_idx):
         """Training step for semi-supervised training."""
@@ -732,6 +819,7 @@ class SemiSupervisedTrainingPlan(TrainingPlan):
             loss,
             on_epoch=True,
             batch_size=loss_output.n_obs_minibatch,
+            prog_bar=True,
         )
         self.compute_and_log_metrics(loss_output, self.train_metrics, "train")
         return loss
@@ -1003,6 +1091,8 @@ class ClassifierTrainingPlan(TunableMixin, pl.LightningModule):
     ----------
     classifier
         A model instance from :class:`~scvi.module.Classifier`.
+    n_classes
+        The number of classes in the labeled dataset.
     lr
         Learning rate used for optimization.
     weight_decay
@@ -1022,6 +1112,7 @@ class ClassifierTrainingPlan(TunableMixin, pl.LightningModule):
     def __init__(
         self,
         classifier: BaseModuleClass,
+        n_classes: int,
         *,
         lr: float = 1e-3,
         weight_decay: float = 1e-6,
@@ -1046,15 +1137,55 @@ class ClassifierTrainingPlan(TunableMixin, pl.LightningModule):
                 "classifier should return logits when using CrossEntropyLoss."
             )
 
+        self.initialize_metrics(n_classes)
+
+    def initialize_metrics(self, n_classes: int):
+        """Initialize metrics."""
+        kwargs = {"task": "multiclass", "num_classes": n_classes}
+        self.accuracy = Accuracy(**kwargs)
+        self.f1 = F1Score(**kwargs)
+        self.auroc = AUROC(**kwargs)
+
     def forward(self, *args, **kwargs):
         """Passthrough to the module's forward function."""
         return self.module(*args, **kwargs)
+
+    def log_with_mode(self, key: str, value: Any, mode: str, **kwargs):
+        """Log with mode."""
+        # TODO: Include this with a base training plan
+        self.log(f"{mode}_{key}", value, **kwargs)
+
+    def compute_and_log_metrics(
+        self, loss_output: LossOutput, metrics: Dict[str, ElboMetric], mode: str
+    ):
+        """Computes and logs metrics."""
+        if loss_output.classification_loss is None:
+            raise ValueError(
+                "`classification_loss` must be provided in `LossOutput` for "
+                "`ClassifierTrainingPlan`."
+            )
+
+        classification_loss = loss_output.classification_loss
+        true_labels = loss_output.true_labels
+        logits = loss_output.logits
+        predicted_labels = torch.argmax(logits, dim=-1, keepdim=True)
+
+        self.accuracy(predicted_labels, true_labels)
+        self.f1(predicted_labels, true_labels)
+        self.auroc(logits, true_labels.view(-1).long())
+
+        self.log_with_mode(
+            METRIC_KEYS.CLASSIFICATION_LOSS_KEY, classification_loss, mode
+        )
+        self.log_with_mode(METRIC_KEYS.ACCURACY_KEY, self.accuracy, mode)
+        self.log_with_mode(METRIC_KEYS.F1_SCORE_KEY, self.f1, mode)
+        self.log_with_mode(METRIC_KEYS.AUROC_KEY, self.auroc, mode)
 
     def training_step(self, batch, batch_idx):
         """Training step for classifier training."""
         soft_prediction = self.forward(batch[self.data_key])
         loss = self.loss_fn(soft_prediction, batch[self.labels_key].view(-1).long())
-        self.log("train_loss", loss, on_epoch=True)
+        self.log("train_loss", loss, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):

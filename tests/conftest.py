@@ -27,6 +27,18 @@ def pytest_addoption(parser):
         default=False,
         help="Run tests that are optional.",
     )
+    parser.addoption(
+        "--accelerator",
+        action="store",
+        default="cpu",
+        help="Option to specify which accelerator to use for tests.",
+    )
+    parser.addoption(
+        "--devices",
+        action="store",
+        default="auto",
+        help="Option to specify which devices to use for tests.",
+    )
 
 
 def pytest_configure(config):
@@ -73,3 +85,15 @@ def synthetic_adata():
 def model_fit(request):
     """Docstring for model_fit."""
     return request.config.getoption("--model_fit")
+
+
+@pytest.fixture(scope="session")
+def accelerator(request):
+    """Docstring for accelerator."""
+    return request.config.getoption("--accelerator")
+
+
+@pytest.fixture(scope="session")
+def devices(request):
+    """Docstring for devices."""
+    return request.config.getoption("--devices")

@@ -2,6 +2,8 @@ from typing import List, Optional, Union
 
 import anndata
 
+from scvi._types import AnnOrMuData
+
 from ._built_in_data._brain_large import _load_brainlarge_dataset
 from ._built_in_data._cellxgene import _load_cellxgene_dataset
 from ._built_in_data._cite_seq import (
@@ -20,7 +22,6 @@ from ._built_in_data._loom import (
     _load_retina,
 )
 from ._built_in_data._pbmc import _load_pbmc_dataset, _load_purified_pbmc_dataset
-from ._built_in_data._seqfish import _load_seqfish, _load_seqfishplus
 from ._built_in_data._smfish import _load_smfish
 from ._built_in_data._synthetic import _generate_synthetic
 
@@ -177,61 +178,6 @@ def smfish(
         save_path=save_path,
         use_high_level_cluster=use_high_level_cluster,
     )
-
-
-def seqfishplus(
-    save_path: str = "data/",
-    tissue_region="subventricular cortex",
-) -> anndata.AnnData:
-    """seqFISH+ of cortex, subventricular zone and olfactory bulb of mouse brain.
-
-    seqFISH+ can image mRNAs for 10,000 genes in single cells—with high accuracy and
-    sub-diffraction-limit resolution—in the cortex, subventricular zone
-    and olfactory bulb of mouse brain
-
-    Parameters
-    ----------
-    save_path
-        Location to use when saving/loading the data.
-    tissue_region
-        Region of the mouse brain, Either "subventricular cortex" or "olfactory bulb"
-
-    Returns
-    -------
-    AnnData with batch info (``.obs['batch']``), label info (``.obs['labels']``),
-    spatial info (``.obs['X']``, ``.obs['Y']``)
-
-    Examples
-    --------
-    >>> import scvi
-    >>> adata = scvi.data.seqfishplus()
-    """
-    return _load_seqfishplus(
-        save_path=save_path,
-        tissue_region=tissue_region,
-    )
-
-
-def seqfish(
-    save_path: str = "data/",
-) -> anndata.AnnData:
-    """Seqfish dataset.
-
-    Parameters
-    ----------
-    save_path
-        Location to use when saving/loading the data.
-
-    Returns
-    -------
-    AnnData with batch info (``.obs['batch']``) and label info (``.obs['labels']``)
-
-    Examples
-    --------
-    >>> import scvi
-    >>> adata = scvi.data.seqfish()
-    """
-    return _load_seqfish(save_path=save_path)
 
 
 def purified_pbmc_dataset(
@@ -546,56 +492,90 @@ def synthetic_iid(
     batch_size: int = 200,
     n_genes: int = 100,
     n_proteins: int = 100,
+    n_regions: int = 100,
     n_batches: int = 2,
     n_labels: int = 3,
-    sparse: bool = False,
     dropout_ratio: float = 0.7,
-) -> anndata.AnnData:
-    """Synthetic dataset with ZINB distributed RNA and NB distributed protein.
+    sparse_format: Optional[str] = None,
+    return_mudata: bool = False,
+) -> AnnOrMuData:
+    """Synthetic multimodal dataset.
 
-    This dataset is just for testing purposed and not meant for modeling or research.
-    Each value is independently and identically distributed.
+    RNA and accessibility data are generated from a zero-inflated negative binomial,
+    while protein data is generated from a negative binomial distribution. This dataset
+    is just for testing purposes and not meant for modeling or research. Each value is
+    independently and identically distributed.
 
     Parameters
     ----------
     batch_size
-        The number of cells per technical batch such that the total number of cells is
+        The number of cells per batch such that the total number of cells in the data is
         `batch_size * n_batches`.
     n_genes
         The number of genes to generate.
     n_proteins
         The number of proteins to generate.
+    n_regions
+        The number of accessibility regions to generate.
     n_batches
         The number of batches to generate.
     n_labels
-        The number of cell types, distributed uniformly across batches.
+        The number of cell type labels, distributed uniformly across batches.
     sparse
-        Whether to store the gene expression data as a :class:`scipy.sparse.csr_matrix`.
+        Whether to store ZINB generated data as a :class:`scipy.sparse.csr_matrix`.
     dropout_ratio
-        The expected percentage of zeros artificially added into the data.
+        The expected percentage of zeros artificially added into the data for RNA
+        and accessibility data.
+    sparse_format
+        Whether to store RNA, accessibility, and protein data as sparse arrays. One of
+        the following:
+
+        * `None`: Store as a dense :class:`numpy.ndarray`.
+        * `"csr_matrix"`: Store as a :class:`scipy.sparse.csr_matrix`.
+        * `"csc_matrix"`: Store as a :class:`scipy.sparse.csc_matrix`.
+        * `"csr_array"`: Store as a :class:`scipy.sparse.csr_array`.
+        * `"csc_array"`: Store as a :class:`scipy.sparse.csc_array`.
+    return_mudata
+        Returns a :class:`~mudata.MuData` if `True`, else :class:`~anndata.AnnData`.
 
     Returns
     -------
-    :class:`~anndata.AnnData` with the following fields:
+    :class:`~anndata.AnnData` (if `return_mudata=False`) with the following fields:
 
     * `.obs["batch"]`: Categorical batch labels in the format `batch_{i}`.
     * `.obs["labels"]`: Categorical cell type labels in the format `label_{i}`.
     * `.obsm["protein_expression"]`: Protein expression matrix.
     * `.uns["protein_names"]`: Array of protein names.
+    * `.obsm["accessibility"]`: Accessibility expression matrix.
+
+    :class:`~mudata.MuData` (if `return_mudata=True`) with the following fields:
+
+    * `.obs["batch"]`: Categorical batch labels in the format `batch_{i}`.
+    * `.obs["labels"]`: Categorical cell type labels in the format `label_{i}`.
+    * `.mod["rna"]`: RNA expression data.
+    * `.mod["protein_expression"]`: Protein expression data.
+    * `.mod["accessibility"]`: Accessibility expression data.
 
     Examples
     --------
     >>> import scvi
     >>> adata = scvi.data.synthetic_iid()
     """
+    if n_batches < 1:
+        raise ValueError("`n_batches` must be greater than 0")
+    if n_genes < 1:
+        raise ValueError("`n_genes` must be greater than 0")
+
     return _generate_synthetic(
         batch_size=batch_size,
         n_genes=n_genes,
         n_proteins=n_proteins,
+        n_regions=n_regions,
         n_batches=n_batches,
         n_labels=n_labels,
-        sparse=sparse,
         dropout_ratio=dropout_ratio,
+        sparse_format=sparse_format,
+        return_mudata=return_mudata,
     )
 
 

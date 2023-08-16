@@ -11,7 +11,6 @@ import jax.numpy as jnp
 import numpy as np
 import pyro
 import torch
-from flax.core import FrozenDict
 from flax.training import train_state
 from jax import random
 from jaxlib.xla_extension import Device
@@ -52,6 +51,12 @@ class LossOutput:
     kl_global
         Global KL divergence term. Should be one dimensional with one value. If a tensor, converted to
         a dictionary with key "kl_global" and value as tensor.
+    classification_loss
+        Classification loss.
+    logits
+        Logits for classification.
+    true_labels
+        True labels for classification.
     extra_metrics
         Additional metrics can be passed as arrays/tensors or dictionaries of
         arrays/tensors.
@@ -74,6 +79,9 @@ class LossOutput:
     reconstruction_loss: LossRecord | None = None
     kl_local: LossRecord | None = None
     kl_global: LossRecord | None = None
+    classification_loss: LossRecord | None = None
+    logits: Tensor | None = None
+    true_labels: Tensor | None = None
     extra_metrics: dict[str, Tensor] | None = field(default_factory=dict)
     n_obs_minibatch: int | None = None
     reconstruction_loss_sum: Tensor = field(default=None, init=False)
@@ -106,6 +114,14 @@ class LossOutput:
             rec_loss = self.reconstruction_loss
             self.n_obs_minibatch = list(rec_loss.values())[0].shape[0]
 
+        if self.classification_loss is not None and (
+            self.logits is None or self.true_labels is None
+        ):
+            raise ValueError(
+                "Must provide `logits` and `true_labels` if `classification_loss` is "
+                "provided."
+            )
+
     @staticmethod
     def dict_sum(dictionary: dict[str, Tensor] | Tensor):
         """Sum over elements of a dictionary."""
@@ -128,7 +144,14 @@ class LossOutput:
 
 
 class BaseModuleClass(TunableMixin, nn.Module):
-    """Abstract class for scvi-tools modules."""
+    """Abstract class for scvi-tools modules.
+
+    Notes
+    -----
+    See further usage examples in the following tutorials:
+
+    1. :doc:`/tutorials/notebooks/dev/module_user_guide`
+    """
 
     def __init__(
         self,
@@ -429,7 +452,7 @@ class PyroBaseModuleClass(TunableMixin, nn.Module):
 class TrainStateWithState(train_state.TrainState):
     """TrainState with state attribute."""
 
-    state: FrozenDict[str, Any]
+    state: dict[str, Any]
 
 
 class JaxBaseModuleClass(TunableMixin, flax.linen.Module):
@@ -601,12 +624,12 @@ class JaxBaseModuleClass(TunableMixin, flax.linen.Module):
         return ret_rngs
 
     @property
-    def params(self) -> FrozenDict[str, Any]:
+    def params(self) -> dict[str, Any]:
         self._check_train_state_is_not_none()
         return self.train_state.params
 
     @property
-    def state(self) -> FrozenDict[str, Any]:
+    def state(self) -> dict[str, Any]:
         self._check_train_state_is_not_none()
         return self.train_state.state
 

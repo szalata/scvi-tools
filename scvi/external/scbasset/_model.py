@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import logging
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -49,6 +51,13 @@ class SCBASSET(BaseModelClass):
     >>> model = scvi.external.SCBASSET(adata)
     >>> model.train()
     >>> adata.varm["X_scbasset"] = model.get_latent_representation()
+
+    Notes
+    -----
+    See further usage examples in the following tutorials:
+
+    1. :doc:`/tutorials/notebooks/atac/scbasset`
+    2. :doc:`/tutorials/notebooks/atac/scbasset_batch`
     """
 
     MOTIF_URLS = {
@@ -92,17 +101,18 @@ class SCBASSET(BaseModelClass):
         self,
         max_epochs: int = 1000,
         lr: float = 0.01,
-        use_gpu: Optional[Union[str, int, bool]] = None,
         accelerator: str = "auto",
-        devices: Union[int, List[int], str] = "auto",
+        devices: int | list[int] | str = "auto",
         train_size: float = 0.9,
-        validation_size: Optional[float] = None,
+        validation_size: float | None = None,
+        shuffle_set_split: bool = True,
         batch_size: int = 128,
         early_stopping: bool = True,
         early_stopping_monitor: str = "auroc_train",
         early_stopping_mode: Literal["min", "max"] = "max",
         early_stopping_min_delta: float = 1e-6,
-        plan_kwargs: Optional[dict] = None,
+        datasplitter_kwargs: dict | None = None,
+        plan_kwargs: dict | None = None,
         **trainer_kwargs,
     ):
         """Train the model.
@@ -113,7 +123,6 @@ class SCBASSET(BaseModelClass):
             Number of epochs to train for
         lr
             Learning rate for optimization.
-        %(param_use_gpu)s
         %(param_accelerator)s
         %(param_devices)s
         train_size
@@ -121,6 +130,9 @@ class SCBASSET(BaseModelClass):
         validation_size
             Size of the test set. If `None`, defaults to 1 - `train_size`. If
             `train_size + validation_size < 1`, the remaining cells belong to a test set.
+        shuffle_set_split
+            Whether to shuffle indices before splitting. If `False`, the val, train, and test set are split in the
+            sequential order of the data according to `validation_size` and `train_size` percentages.
         batch_size
             Minibatch size to use during training.
         early_stopping
@@ -135,6 +147,8 @@ class SCBASSET(BaseModelClass):
         early_stopping_min_delta
             Minimum change in the monitored quantity to qualify as an improvement,
             i.e. an absolute change of less than min_delta, will count as no improvement.
+        datasplitter_kwargs
+            Additional keyword arguments passed into :class:`~scvi.dataloaders.DataSplitter`.
         plan_kwargs
             Keyword args for :class:`~scvi.train.TrainingPlan`. Keyword arguments passed to
             `train()` will overwrite values present in `plan_kwargs`, when appropriate.
@@ -150,16 +164,20 @@ class SCBASSET(BaseModelClass):
         if plan_kwargs is not None:
             custom_plan_kwargs.update(plan_kwargs)
 
+        datasplitter_kwargs = datasplitter_kwargs or {}
+
         data_splitter = DataSplitter(
             self.adata_manager,
             train_size=train_size,
             validation_size=validation_size,
+            shuffle_set_split=shuffle_set_split,
             batch_size=batch_size,
             # We don't want to dataload the batch ids into the module
             data_and_attributes={
                 REGISTRY_KEYS.X_KEY: np.float32,
                 REGISTRY_KEYS.DNA_CODE_KEY: np.int64,
             },
+            **datasplitter_kwargs,
         )
         training_plan = TrainingPlan(self.module, **custom_plan_kwargs)
 
@@ -178,7 +196,6 @@ class SCBASSET(BaseModelClass):
             training_plan=training_plan,
             data_splitter=data_splitter,
             max_epochs=max_epochs,
-            use_gpu=use_gpu,
             accelerator=accelerator,
             devices=devices,
             **trainer_kwargs,
@@ -236,8 +253,8 @@ class SCBASSET(BaseModelClass):
 
     @dependencies("Bio")
     def _get_motif_library(
-        self, tf: str, genome: str = "human", motif_dir: Optional[str] = None
-    ) -> Tuple[List[str], List[str]]:
+        self, tf: str, genome: str = "human", motif_dir: str | None = None
+    ) -> tuple[list[str], list[str]]:
         """Load sequences with a TF motif injected from a pre-computed library
 
         Parameters
@@ -290,8 +307,8 @@ class SCBASSET(BaseModelClass):
         self,
         tf: str,
         genome: str = "human",
-        motif_dir: Optional[str] = None,
-        lib_size_norm: Optional[bool] = True,
+        motif_dir: str | None = None,
+        lib_size_norm: bool | None = True,
         batch_size: int = 256,
     ) -> np.ndarray:
         """Infer transcription factor activity using a motif injection procedure.
@@ -396,8 +413,8 @@ class SCBASSET(BaseModelClass):
         cls,
         adata: AnnData,
         dna_code_key: str,
-        layer: Optional[str] = None,
-        batch_key: Optional[str] = None,
+        layer: str | None = None,
+        batch_key: str | None = None,
         **kwargs,
     ):
         """%(summary)s.
