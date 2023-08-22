@@ -1,5 +1,6 @@
 """File for computing log likelihood of the data."""
 import torch
+import numpy as np
 
 
 def compute_elbo(vae, data_loader, feed_labels=True, **kwargs):
@@ -28,7 +29,7 @@ def compute_elbo(vae, data_loader, feed_labels=True, **kwargs):
 
 
 # do each one
-def compute_reconstruction_error(vae, data_loader, **kwargs):
+def compute_reconstruction_error(vae, data_loader, return_mean, **kwargs):
     """Computes log p(x/z), which is the reconstruction error.
 
     Differs from the marginal log likelihood, but still gives good
@@ -44,13 +45,23 @@ def compute_reconstruction_error(vae, data_loader, **kwargs):
         else:
             rec_loss_dict = losses.reconstruction_loss
         for key, value in rec_loss_dict.items():
-            if key in log_lkl:
-                log_lkl[key] += torch.sum(value).item()
+            if return_mean:
+                if key in log_lkl:
+                    log_lkl[key] += torch.sum(value).item()
+                else:
+                    log_lkl[key] = torch.sum(value).item()
             else:
-                log_lkl[key] = torch.sum(value).item()
+                if key in log_lkl:
+                    log_lkl[key].append(value.cpu().numpy())
+                else:
+                    log_lkl[key] = [value.cpu().numpy()]
 
-    n_samples = len(data_loader.indices)
-    for key, _ in log_lkl.items():
-        log_lkl[key] = log_lkl[key] / n_samples
-        log_lkl[key] = -log_lkl[key]
+    if return_mean:
+        n_samples = len(data_loader.indices)
+        for key, _ in log_lkl.items():
+            log_lkl[key] = log_lkl[key] / n_samples
+            log_lkl[key] = -log_lkl[key]
+    else:
+        for key, values in log_lkl.items():
+            log_lkl[key] = np.concatenate(values)
     return log_lkl

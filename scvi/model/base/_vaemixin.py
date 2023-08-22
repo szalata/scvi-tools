@@ -113,6 +113,7 @@ class VAEMixin:
         adata: Optional[AnnData] = None,
         indices: Optional[Sequence[int]] = None,
         batch_size: Optional[int] = None,
+        return_mean: Optional[bool] = True
     ) -> float:
         r"""Return the reconstruction error for the data.
 
@@ -133,7 +134,7 @@ class VAEMixin:
         scdl = self._make_data_loader(
             adata=adata, indices=indices, batch_size=batch_size
         )
-        reconstruction_error = compute_reconstruction_error(self.module, scdl)
+        reconstruction_error = compute_reconstruction_error(self.module, scdl, return_mean)
         return reconstruction_error
 
     @torch.inference_mode()
