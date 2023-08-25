@@ -213,6 +213,34 @@ class BaseModuleClass(TunableMixin, nn.Module):
             compute_loss,
         )
 
+    @auto_move_data
+    def forward_skip_encoder(
+            self,
+            tensors,
+            get_inference_input_kwargs: dict | None = None,
+            get_generative_input_kwargs: dict | None = None,
+            inference_kwargs: dict | None = None,
+            generative_kwargs: dict | None = None,
+            loss_kwargs: dict | None = None,
+            compute_loss=True,
+            latent_params=None
+    ) -> (
+            tuple[torch.Tensor, torch.Tensor]
+            | tuple[torch.Tensor, torch.Tensor, LossOutput]
+    ):
+        return _generic_forward_skip_encoder(
+            self,
+            tensors,
+            inference_kwargs,
+            generative_kwargs,
+            loss_kwargs,
+            get_inference_input_kwargs,
+            get_generative_input_kwargs,
+            compute_loss,
+            latent_params
+        )
+
+
     @abstractmethod
     def _get_inference_input(self, tensors: dict[str, torch.Tensor], **kwargs):
         """Parse tensors dictionary for inference related values."""
@@ -746,6 +774,41 @@ def _generic_forward(
     inference_inputs = module._get_inference_input(
         tensors, **get_inference_input_kwargs
     )
+    inference_outputs = module.inference(**inference_inputs, **inference_kwargs)
+    generative_inputs = module._get_generative_input(
+        tensors, inference_outputs, **get_generative_input_kwargs
+    )
+    generative_outputs = module.generative(**generative_inputs, **generative_kwargs)
+    if compute_loss:
+        losses = module.loss(
+            tensors, inference_outputs, generative_outputs, **loss_kwargs
+        )
+        return inference_outputs, generative_outputs, losses
+    else:
+        return inference_outputs, generative_outputs
+
+def _generic_forward_skip_encoder(
+    module,
+    tensors,
+    inference_kwargs,
+    generative_kwargs,
+    loss_kwargs,
+    get_inference_input_kwargs,
+    get_generative_input_kwargs,
+    compute_loss,
+    latent_params
+):
+    """Core of the forward call shared by PyTorch- and Jax-based modules."""
+    inference_kwargs = _get_dict_if_none(inference_kwargs)
+    generative_kwargs = _get_dict_if_none(generative_kwargs)
+    loss_kwargs = _get_dict_if_none(loss_kwargs)
+    get_inference_input_kwargs = _get_dict_if_none(get_inference_input_kwargs)
+    get_generative_input_kwargs = _get_dict_if_none(get_generative_input_kwargs)
+
+    inference_inputs = module._get_inference_input(
+        tensors, **get_inference_input_kwargs
+    )
+    inference_kwargs["latent_precomputed"] = latent_params
     inference_outputs = module.inference(**inference_inputs, **inference_kwargs)
     generative_inputs = module._get_generative_input(
         tensors, inference_outputs, **get_generative_input_kwargs

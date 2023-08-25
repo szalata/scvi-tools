@@ -314,6 +314,7 @@ class VAE(BaseMinifiedModeModuleClass):
         cont_covs=None,
         cat_covs=None,
         n_samples=1,
+        latent_precomputed=None
     ):
         """High level inference method.
 
@@ -333,7 +334,17 @@ class VAE(BaseMinifiedModeModuleClass):
             categorical_input = torch.split(cat_covs, 1, dim=1)
         else:
             categorical_input = ()
-        qz, z = self.z_encoder(encoder_input, batch_index, *categorical_input)
+        if latent_precomputed is None:
+            qz, z = self.z_encoder(encoder_input, batch_index, *categorical_input)
+        else:
+            # latent_precomputed.to(x.device)
+            qz = torch.distributions.Normal(loc=latent_precomputed[..., 0], scale=torch.exp(0.5 * latent_precomputed[..., 1]))
+            sigma = torch.exp(0.5 * latent_precomputed[..., 1])
+            # Sample epsilon from a standard normal distribution
+            epsilon = torch.randn_like(sigma)
+            # Applying the reparametrization trick to get samples
+            z = latent_precomputed[..., 0] + sigma * epsilon
+
         ql = None
         if not self.use_observed_lib_size:
             ql, library_encoded = self.l_encoder(

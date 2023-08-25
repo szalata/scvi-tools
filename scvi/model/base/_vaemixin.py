@@ -7,7 +7,7 @@ from anndata import AnnData
 
 from scvi.utils import unsupported_if_adata_minified
 
-from ._log_likelihood import compute_elbo, compute_reconstruction_error
+from ._log_likelihood import compute_elbo, compute_reconstruction_error, compute_elbo_skip_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,37 @@ class VAEMixin:
             adata=adata, indices=indices, batch_size=batch_size
         )
         elbo = compute_elbo(self.module, scdl)
+        return -elbo
+
+    @unsupported_if_adata_minified
+    def get_elbo_skip_encoder(
+        self,
+        adata: Optional[AnnData] = None,
+        indices: Optional[Sequence[int]] = None,
+        batch_size: Optional[int] = None,
+        latent_params: Optional[dict] = None,
+        kl_weight: Optional[float] = 1
+    ) -> float:
+        """Return the ELBO for the data.
+
+        The ELBO is a lower bound on the log likelihood of the data used for optimization
+        of VAEs. Note, this is not the negative ELBO, higher is better.
+
+        Parameters
+        ----------
+        adata
+            AnnData object with equivalent structure to initial AnnData. If `None`, defaults to the
+            AnnData object used to initialize the model.
+        indices
+            Indices of cells in adata to use. If `None`, all cells are used.
+        batch_size
+            Minibatch size for data loading into model. Defaults to `scvi.settings.batch_size`.
+        """
+        adata = self._validate_anndata(adata)
+        scdl = self._make_data_loader(
+            adata=adata, indices=indices, batch_size=batch_size
+        )
+        elbo = compute_elbo_skip_encoder(self.module, scdl, latent_params=latent_params, kl_weight=kl_weight)
         return -elbo
 
     @torch.inference_mode()

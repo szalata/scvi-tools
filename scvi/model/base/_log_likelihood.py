@@ -2,6 +2,35 @@
 import torch
 import numpy as np
 
+def compute_elbo_skip_encoder(vae, data_loader, latent_params, feed_labels=True, kl_weight=1, **kwargs):
+    """Computes the ELBO.
+
+    The ELBO is the reconstruction error + the KL divergences
+    between the variational distributions and the priors.
+    It differs from the marginal log likelihood.
+    Specifically, it is a lower bound on the marginal log likelihood
+    plus a term that is constant with respect to the variational distribution.
+    It still gives good insights on the modeling of the data, and is fast to compute.
+    """
+    # Iterate once over the data and compute the elbo
+    elbo = 0
+    for i, tensors in enumerate(data_loader):
+        batch_size = data_loader.kwargs["sampler"].batch_size
+        start_idx = i * batch_size
+        end_idx = min(start_idx + batch_size, len(data_loader.indices))
+        # Extract the batch indices from dataloader.indices
+        kwargs["latent_params"] = latent_params[data_loader.indices[start_idx:end_idx]]
+        # update call to vae
+        _, _, scvi_loss = vae.forward_skip_encoder(tensors, **kwargs)
+
+        recon_loss = scvi_loss.reconstruction_loss_sum
+        kl_local = scvi_loss.kl_local_sum
+        elbo += (recon_loss + kl_weight * kl_local)
+
+    kl_global = scvi_loss.kl_global_sum
+    n_samples = len(data_loader.indices)
+    elbo += kl_global * kl_weight
+    return elbo / n_samples
 
 def compute_elbo(vae, data_loader, feed_labels=True, **kwargs):
     """Computes the ELBO.
